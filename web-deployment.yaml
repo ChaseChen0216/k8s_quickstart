@@ -1,0 +1,120 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  annotations: # Dockerfile LABEL
+    app: httpserver
+    lan: golang
+    maintainer: jiac
+  name: web
+spec:
+#  revisionHistoryLimit: 10  # 节省etcd的控件
+#  progressDeadlineSeconds: 600 # ?
+  replicas: 1
+  selector: # 这里起作用吗？
+    matchLabels:
+      app: httpserver
+  strategy: # 指定部署策略
+    rollingUpdate:
+      maxSurge: 1 # 最大额外可以存在的副本数，可以为百分比、整数
+      maxUnavailable: 1 # 表示在更新过程中能够进入不可用状态的 Pod 的最大值，可以百分比、整数
+    type: RollingUpdate # 更新策略，包括：重建(Recreate)、RollingUpdate(滚动更新)
+  template:
+    metadata:
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8083"
+      labels:  # 指定Pod的标签，对应service的selector
+        app: httpserver
+    spec:
+      containers:
+        - command:
+            - /bin/httpserver
+            - --debug=1
+          env:
+            #环境变量
+#            - name: PORT
+#              value: "8082"  # todo:改用configmap
+            #身份认证
+            - name: name
+              valueFrom:
+                secretKeyRef:
+                  name: httpserver-secret
+                  key: name
+            - name: pwd
+              valueFrom:
+                secretKeyRef:
+                  name: httpserver-secret
+                  key: pwd
+          image: 463045792/httpserver:v3-metric
+          imagePullPolicy: IfNotPresent
+          name: httpserver
+          ports:
+            - containerPort: 8082
+#          lifecycle: # 当一个容器启动后，Kubernetes将立即发送postStart事件；在容器被终结之前，Kubernetes将发送一个preStop事件
+#            postStart:
+#              exec:
+#                 #容器镜像不支持/bin/bash 所以注释了
+#                command: [ "/bin/sh", "-c", "echo Hello from the postStart handler" ]
+#            preStop:
+#              exec:
+#                command: [ "/bin/sh","-c","nginx -s quit; while killall -0 nginx; do sleep 1; done" ]
+          livenessProbe: # 存活检查，检查容器是否正常，不正常则重启实例
+            httpGet: # HTTP请求检查方法
+              path: /healthz # 请求路径
+              port: 8082 # 检查端口
+              scheme: HTTP # 检查协议
+            initialDelaySeconds: 10 # 启动延时，容器延时启动健康检查的时间
+            periodSeconds: 5 # 间隔时间，进行健康检查的时间间隔，通常5s/10s
+            successThreshold: 1 # 健康阈值，连续多少次正常才认为是success  # 强制是1
+            failureThreshold: 2 # 不健康阈值，连续多少次出错才认为是error
+            timeoutSeconds: 3 # 响应超时，超过这个时间不响应就认为是失败
+          readinessProbe: # 就绪检查，检查容器是否就绪，不就绪则停止转发流量到当前实例
+            httpGet:
+              ### this probe will fail with 404 error code
+              ### only httpcode between 200-400 is retreated as success
+              path: /healthz
+              port: 8082
+              scheme: HTTP
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            successThreshold: 2
+            failureThreshold: 2
+            timeoutSeconds: 3
+          startupProbe: # 启动探针，可以知道应用程序容器什么时候启动了
+            httpGet:
+              path: /healthz
+              port: 8082
+              scheme: HTTP
+            initialDelaySeconds: 1  # 比livenessProbe早执行
+            periodSeconds: 10  # ！应用程序有failureThreshold * periodSeconds的时间启动，频度比livenessProbe要低
+            successThreshold: 1
+            failureThreshold: 10
+            timeoutSeconds: 3
+          resources: # 资源需求（Qos）
+            limits: # limits用于设置容器使用资源的最大上限,避免异常情况下节点资源消耗过多
+              cpu: "1" # 设置cpu limit，1核心 = 1000m
+              memory: 1Gi # 设置memory limit，1G = 1024Mi
+            requests: # requests用于预分配资源,当集群中的节点没有request所要求的资源数量时,容器会创建失败
+              cpu: 250m # 设置cpu request
+              memory: 500Mi # 设置memory request
+          terminationMessagePath: /dev/termination-log # 容器终止时消息保存路径
+          terminationMessagePolicy: File # 仅从终止消息文件中检索终止消息
+      restartPolicy: Always # 重启策略，Always、OnFailure、Never  # deploy强制使用Always
+      terminationGracePeriodSeconds: 30  # 优雅关闭时间，这个时间内优雅关闭未结束，k8s 强制 kill pod
+#      imagePullSecrets:  --引入secret
+#        - xxx
+#      readinessGates:
+#        - conditionType:  #可以添加只有给pod的dns配好了才接收流量的场景
+#      volumes: # 配置数据卷，类型详见https://kubernetes.io/zh/docs/concepts/storage/volumes
+#        - configMap: # configMap 类型的数据卷
+#            defaultMode: 420 #权限设置0~0777，默认0664
+#            items:
+#              - key: iam-apiserver.yaml
+#                path: iam-apiserver.yaml
+#            name: iam # configmap名称
+#          name: iam # 设置卷名称，与volumeMounts名称对应
+#        - configMap:
+#            defaultMode: 420
+#            name: iam-cert
+#          name: iam-cert
+
